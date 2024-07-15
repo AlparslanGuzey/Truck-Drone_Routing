@@ -1,0 +1,149 @@
+
+using Clustering
+using Distances
+using DataFrames, Gadfly, Cairo, Fontconfig, Compose
+using Random
+using LinearAlgebra
+using XLSX
+using Plots, PlotlyJS
+using CategoricalArrays
+using GeneticAlgorithms
+using TravelingSalesmanHeuristics
+
+#Toplanma Alanı Sayısı
+tas = 200
+#Drone Sayısı
+drs = 4
+#Drone Hızı (m/dk)
+drh = 10
+#Drone Dolu İken Uçuş Süresi
+ddus = 10
+#Drone Boş İken Uçuş Süresi
+dbus = 15
+
+#Toplanma alanlarının koordinatları oluşturuluyor
+kx = rand(900:1200,tas)
+ky = rand(2300:2400,tas)
+kz = rand(1:7,tas)
+X=vcat(kx',ky',kz')
+
+# Custom fitness function
+function tsp_fitness(chromosome, distmat)
+    n = length(chromosome)
+    fitness = sum(distmat[chromosome[i], chromosome[i % n + 1]] for i in 1:n)
+    return 1 / fitness
+end
+
+for dsd=2:tas
+    global ds, R, as, c, M, T, U, dsi, DEUE
+    ds=dsd
+
+    #K-ortalamalar
+    R = kmeans(X, ds; maxiter=200)
+    #Toplanma Alanının Hangi Kümeye Atandığı Bilgisi
+    as = assignments(R)
+    #Kümelerde Kaç Toplanma Alanı Olduğu Bilgisi
+    c = counts(R)
+    #Kümelerin Merkez Noktaları
+    M = R.centers
+
+    #Toplanma Alanını Kümelere Atadığımızda Alanın İndis Bilgisini Tutuyor
+    T = Array{Int}(undef, tas, ds)
+    T=zeros(tas,ds)
+    #Toplanma Alanlalarının Atandıkları Küme Merkezine Olan Uzaklıkları (dk cinsinden)
+    U = Array{Float64}(undef, tas, ds)
+    U=zeros(tas,ds)
+    #Duraktaki Küme Merkezine En Uzak Olan Toplanma Alanının Uzaklığı (dk cinsinden)
+    DEUE = Vector{Float64}(undef, ds)
+    DEUE = zeros(ds)
+
+    #dsi vektörünü T ve U Matrislerinin Satır İndisleri için Kullanılıyor
+    dsi = Vector{Int}(undef, ds)
+    for i=1:ds
+        dsi[i] = 1
+    end
+
+    for i=1:tas
+        for j=1:ds
+            if as[i]==j
+                T[dsi[j],j]=i
+                U[dsi[j],j]=euclidean(X[:,i], M[:,j])/drh
+                dsi[j] = dsi[j] + 1
+            end
+        end
+    end
+
+    if maximum(U) <= (dbus/(drs*2))
+        break
+    end
+end
+
+# Create distance matrix for TSP
+distmat = Array{Float64}(undef, ds, ds)
+for i in 1:ds
+    for j in 1:ds
+        distmat[i, j] = euclidean(M[:, i], M[:, j]) / drh
+    end
+end
+
+# Set up the genetic algorithm
+popsize = 100
+ngen = 1000
+pcross = 0.8
+pmut = 0.1
+nind = round(Int, popsize/2)
+
+# Initialize the population
+population = Array{Int64}(undef, popsize, ds)
+for i in 1:popsize
+    population[i, :] = Random.randperm(ds)
+end
+
+# Run the genetic algorithm
+ga = GeneticAlgorithms.GeneticAlgorithm(tsp_fitness, population, ngen, pcross, pmut, elitism=true)
+
+# Prepare the solver
+tsp_solver = TravelingSalesmanHeuristics.TSHeuristics(distmat)
+
+# Initialize best solution and fitness
+best_solution = nothing
+best_fitness = -Inf
+
+for i in 1:ngen
+    # Evaluate the fitness of the population
+    fitness = ga:evaluate_population!(distmat)
+
+    # Update the best solution if needed
+    if maximum(fitness) > best_fitness
+        best_fitness = maximum(fitness)
+        best_solution = population[argmax(fitness), :]
+    end
+
+    # Perform selection, crossover, and mutation
+    ga:selection!(nind)
+    ga:crossover!(pcross)
+    ga:mutation!(pmut)
+
+    # Update the population
+    ga:update_population!()
+
+    # Print the progress
+    println("Generation $i: Best Fitness = $best_fitness")
+end
+
+# Compute the final route
+route = vcat(best_solution, best_solution[1])
+println("Final Route: $route")
+
+# Calculate the total distance of the final route
+total_distance = 0
+for i in 1:length(route) - 1
+    total_distance += distmat[route[i], route[i+1]]
+end
+println("Total Distance: $total_distance")
+
+# Plot the final route
+x_coords = [M[1, i] for i in route]
+y_coords = [M[2, i] for i in route]
+plot(x_coords, y_coords, markershape=:circle, markersize=6, label="Cluster centers", linewidth=1, line=:dash, markerstrokewidth=0, title="Final Route of Drones", xlabel="X", ylabel="Y")
+
